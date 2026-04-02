@@ -101,14 +101,28 @@
       gap: 28px;
       align-items: center;
     }
-    .cart-icon, .admin-icon {
+    .cart-icon {
       position: relative;
       cursor: pointer;
       font-size: 1.7rem;
       color: white;
       transition: 0.2s;
     }
-    .cart-icon:hover, .admin-icon:hover { color: #e63946; }
+    .cart-icon:hover { color: #e63946; }
+    /* Admin shield: invisible on dark header but stays clickable */
+    .admin-icon {
+      position: relative;
+      cursor: pointer;
+      font-size: 1.7rem;
+      color: #0a0c15;
+      transition: 0.2s;
+      min-width: 28px;
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .admin-icon:hover { color: #0a0c15; }
     .cart-count {
       position: absolute;
       top: -10px;
@@ -367,6 +381,7 @@
       height: 100%;
       background: rgba(157, 220, 211, 0.85);
       backdrop-filter: blur(5px);
+      z-index: 0;
     }
     .admin-modal-content {
       position: absolute;
@@ -381,6 +396,7 @@
       overflow-y: auto;
       box-shadow: 0 25px 50px -12px rgba(102, 205, 152, 0.5);
       animation: adminModalSlideIn 0.3s ease-out;
+      z-index: 1;
     }
     .admin-modal-header {
       display: flex;
@@ -455,14 +471,33 @@
       border-radius: 12px;
       margin-right: 10px;
     }
-    .product-admin-item {
-      background: #0f172a;
+    #adminProductsList .product-admin-item {
+      background: #ffffff;
+      color: #000000;
       border-radius: 16px;
       padding: 12px;
       margin-bottom: 12px;
       display: flex;
       gap: 12px;
       align-items: center;
+      border: 1px solid #e2e8f0;
+    }
+    #adminProductsList .product-admin-item:nth-child(even) {
+      background: #f1f5f9;
+    }
+    #adminProductsList .product-admin-info {
+      flex: 1;
+      color: #000000;
+    }
+    #adminProductsList .product-admin-info strong {
+      color: #000000;
+    }
+    #adminProductsList .product-admin-price {
+      color: #e63946;
+      font-weight: 700;
+    }
+    #adminProductsList .product-admin-old-price {
+      color: #64748b;
     }
     .product-admin-img {
       width: 60px;
@@ -470,7 +505,6 @@
       object-fit: cover;
       border-radius: 12px;
     }
-    .product-admin-info { flex: 1; }
     .product-admin-actions button {
       background: none;
       border: none;
@@ -884,7 +918,7 @@
 <!-- Admin Modal Overlay -->
 <div id="adminPanel" class="admin-modal" style="display: none;">
   <div class="admin-modal-overlay" onclick="closeAdminModal()"></div>
-  <div class="admin-modal-content">
+  <div class="admin-modal-content" id="adminModalContent">
     <div class="admin-modal-header">
       <h3><i class="fas fa-crown"></i> এডমিন প্যানেল</h3>
       <button class="admin-modal-close" onclick="closeAdminModal()">
@@ -1115,6 +1149,108 @@
   // Global Variables
   let products = [], cart = [], orders = [], adminLogged = false;
 
+  function stripUndefinedForFirestore(obj) {
+    const out = {};
+    Object.keys(obj).forEach(k => { if (obj[k] !== undefined) out[k] = obj[k]; });
+    return out;
+  }
+
+  /** Click target can be a Text node — Text has no .closest(); normalize first */
+  function eventTargetElement(ev) {
+    const t = ev.target;
+    if (!t) return null;
+    return t.nodeType === 1 ? t : t.parentElement;
+  }
+
+  /** One-time: Add Product (image URL only) — delegate on #adminModalContent */
+  function initAdminAddProductDelegation() {
+    const delegateRoot = document.getElementById('adminModalContent');
+    if (!delegateRoot || delegateRoot.dataset.addProductDelegation === '1') return;
+    delegateRoot.dataset.addProductDelegation = '1';
+
+    delegateRoot.addEventListener('click', async (e) => {
+      const el = eventTargetElement(e);
+      const addBtn = el && el.closest ? el.closest('#addProductAdminBtn') : null;
+      if (!addBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const nameEl = document.getElementById('newProductName');
+      const priceEl = document.getElementById('newProductPrice');
+      const oldPriceEl = document.getElementById('newProductOldPrice');
+      const stockEl = document.getElementById('newProductStock');
+      const urlEl = document.getElementById('newProductImageUrl');
+
+      if (!nameEl || !priceEl || !oldPriceEl || !stockEl || !urlEl) return;
+
+      const resetAddProductForm = () => {
+        nameEl.value = "";
+        priceEl.value = "";
+        oldPriceEl.value = "";
+        stockEl.value = "";
+        urlEl.value = "";
+        document.querySelectorAll('#adminContent .ap-size').forEach(cb => { cb.checked = false; });
+      };
+
+      const fail = (msg) => {
+        showToast(msg, "warning");
+        addBtn.style.removeProperty("background");
+        addBtn.disabled = false;
+      };
+
+      addBtn.style.setProperty("background", "#10b981", "important");
+      addBtn.disabled = true;
+
+      const name = (nameEl.value || "").trim();
+      const price = parseFloat(priceEl.value);
+      const oldPriceRaw = oldPriceEl.value === "" ? NaN : parseFloat(oldPriceEl.value);
+      const stock = parseInt(stockEl.value, 10);
+      const imgUrl = (urlEl.value || "").trim();
+      const sizes = Array.from(document.querySelectorAll('#adminContent .ap-size:checked')).map(cb => cb.value);
+
+      if (!imgUrl) { fail("Please enter image URL"); return; }
+      if (!name) { fail("Please enter product name"); return; }
+      if (!Number.isFinite(price) || price <= 0) { fail("Please enter current price"); return; }
+      if (!Number.isFinite(stock) || stock < 0) { fail("Please enter stock quantity"); return; }
+
+      const oldPrice = (Number.isFinite(oldPriceRaw) && oldPriceRaw > 0) ? oldPriceRaw : price;
+      const discount = oldPrice > 0 ? Math.max(0, Math.round(((oldPrice - price) / oldPrice) * 100)) : 0;
+
+      const product = stripUndefinedForFirestore({
+        id: Date.now(),
+        name,
+        price,
+        oldPrice,
+        discount,
+        stock,
+        img: imgUrl,
+        imageUrl: imgUrl,
+        sizes,
+        isMain: true,
+        parentId: null
+      });
+
+      try {
+        await db.collection('products').add(product);
+        showToast("✅ Product added successfully!", "success");
+        resetAddProductForm();
+        await loadProductsFromFirebase();
+      } catch (err) {
+        console.error(err);
+        const details = err && err.message ? err.message : String(err);
+        showToast(`Error saving product: ${details}`, "error");
+      } finally {
+        setTimeout(() => {
+          const b = document.getElementById('addProductAdminBtn');
+          if (b) {
+            b.style.removeProperty("background");
+            b.disabled = false;
+          }
+        }, 1000);
+      }
+    });
+  }
+
   // Firebase Functions
   async function initializeDefaultProducts() {
     try {
@@ -1269,9 +1405,53 @@
     document.getElementById('cartCount').innerText=count;
     document.getElementById('cartTotal').innerText=total;
     const container=document.getElementById('cartItemsList');
+    if (!container) return;
     if(cart.length===0) container.innerHTML='<p>কার্ট খালি</p>';
-    else container.innerHTML=cart.map((it,idx)=>`<div style="display:flex; gap:12px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;"><img src="${it.img}" width="55" height="55" style="border-radius:12px; object-fit:cover"><div style="flex:1"><strong>${it.name}</strong><br>সাইজ: ${it.size} | ৳${it.price}<br>x${it.quantity}</div><button class="removeCart" data-idx="${idx}" style="background:#e63946; border:none; color:white; padding:4px 12px; border-radius:30px;">x</button></div>`).join('');
-    document.querySelectorAll('.removeCart').forEach(btn=>btn.addEventListener('click',()=>{ const idx=parseInt(btn.dataset.idx); cart.splice(idx,1); saveCart(); updateCartUI(); showToast("সরানো হয়েছে"); }));
+    else container.innerHTML = cart.map((it, idx) => `
+      <div style="display:flex; gap:12px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
+        <img src="${it.img}" width="55" height="55" style="border-radius:12px; object-fit:cover">
+        <div style="flex:1">
+          <strong>${it.name}</strong><br>
+          সাইজ: ${it.size}<br>
+          ৳${it.price} করে
+          <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
+            <button class="cart-qty-minus" data-idx="${idx}" style="width:34px; height:34px; border-radius:10px; background:#0b1120; color:white; border:none; cursor:pointer; font-size:18px; line-height:34px;">-</button>
+            <span style="min-width:34px; text-align:center; font-weight:800;">${it.quantity}</span>
+            <button class="cart-qty-plus" data-idx="${idx}" style="width:34px; height:34px; border-radius:10px; background:#10b981; color:white; border:none; cursor:pointer; font-size:18px; line-height:34px;">+</button>
+          </div>
+        </div>
+        <button class="removeCart" data-idx="${idx}" style="background:#e63946; border:none; color:white; padding:4px 12px; border-radius:30px; height:34px; align-self:flex-start; cursor:pointer;">x</button>
+      </div>
+    `).join('');
+
+    document.querySelectorAll('.cart-qty-minus').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        if (!Number.isFinite(idx) || !cart[idx]) return;
+        cart[idx].quantity -= 1;
+        if (cart[idx].quantity <= 0) cart.splice(idx, 1);
+        saveCart();
+      });
+    });
+
+    document.querySelectorAll('.cart-qty-plus').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        if (!Number.isFinite(idx) || !cart[idx]) return;
+        cart[idx].quantity += 1;
+        saveCart();
+      });
+    });
+
+    document.querySelectorAll('.removeCart').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        if (!Number.isFinite(idx) || !cart[idx]) return;
+        cart.splice(idx, 1);
+        saveCart();
+        showToast("সরানো হয়েছে");
+      });
+    });
   }
 
   function saveCart() { localStorage.setItem('mms_cart',JSON.stringify(cart)); updateCartUI(); }
@@ -1291,7 +1471,7 @@
       const hasRelated = relatedProducts.length > 0;
       
       return `
-        <div class="product-card" data-pid="${mainProduct.id}">
+        <div class="product-card" data-id="${mainProduct.id}">
           <img class="product-img" src="${mainProduct.img}" onerror="this.src='https://placehold.co/300x240'">
           <div class="product-info">
             <div class="product-title">
@@ -1311,7 +1491,7 @@
           ${hasRelated ? `
             <div class="related-products" id="related-${mainProduct.id}" style="display: none;">
               ${relatedProducts.map(relatedProduct => `
-                <div class="related-product-item">
+                <div class="related-product-item" data-id="${relatedProduct.id}">
                   <img class="product-img" src="${relatedProduct.img}" onerror="this.src='https://placehold.co/300x240'">
                   <div class="product-info">
                     <div class="product-title">${relatedProduct.name}</div>
@@ -1334,12 +1514,20 @@
     
     // Add event listeners for all product cards (including related products)
     document.querySelectorAll('.product-card, .related-product-item').forEach(card => {
-      const pid = parseInt(card.dataset.id);
-      const product = products.find(p=>p.id===pid);
+      const pid = parseInt(card.dataset.id, 10);
+      const product = products.find(p => p.id === pid);
       let selected = '';
       const boxes = card.querySelectorAll('.size-box');
       boxes.forEach(b=>{ b.addEventListener('click',()=>{ boxes.forEach(bx=>bx.classList.remove('selected')); b.classList.add('selected'); selected = b.dataset.size; }); });
-      card.querySelector('.addToCartBtn').addEventListener('click',()=>{ if(!selected){ showToast("সাইজ সিলেক্ট করুন","warning"); return; } const exist = cart.find(i=>i.id===pid && i.size===selected); if(exist) exist.quantity++; else cart.push({...product, size:selected, quantity:1}); saveCart(); showToast(`${product.name} যোগ হয়েছে`); });
+      card.querySelector('.addToCartBtn')?.addEventListener('click',()=>{
+        if (!product) { showToast("পণ্য পাওয়া যায়নি", "warning"); return; }
+        if (!selected){ showToast("সাইজ সিলেক্ট করুন","warning"); return; }
+        const exist = cart.find(i=>i.id===pid && i.size===selected);
+        if(exist) exist.quantity++;
+        else cart.push({...product, size:selected, quantity:1});
+        saveCart();
+        showToast(`${product.name} যোগ হয়েছে`);
+      });
     });
   }
 
@@ -1362,49 +1550,8 @@
       div.innerHTML = `<div class="admin-login-box"><h4>এডমিন লগইন</h4><input type="password" id="adminPass" class="admin-input" placeholder="পাসওয়ার্ড"><button id="adminLoginBtn" class="admin-btn">লগইন করুন</button></div>`;
       document.getElementById('adminLoginBtn')?.addEventListener('click',()=>{ if(document.getElementById('adminPass').value==="admin123"){ adminLogged=true; renderAdmin(); showToast("স্বাগতম এডমিন"); } else showToast("ভুল পাসওয়ার্ড","warning"); });
     } else {
-      div.innerHTML = `<div class="admin-dashboard"><h3>📦 অর্ডার সমূহ (${orders.length})</h3><div id="adminOrdersList"></div><hr><h3>🛍️ পণ্য ব্যবস্থাপনা</h3><div id="adminProductsList"></div><hr><h4>➕ নতুন পণ্য যোগ করুন</h4><input id="newProductUrl" placeholder="ছবির URL" class="admin-input"><input id="newProductName" placeholder="পণ্যের নাম" class="admin-input"><input id="newProductPrice" placeholder="বর্তমান মূল্য" type="number" class="admin-input"><input id="newProductOldPrice" placeholder="পুরাতন মূল্য" type="number" class="admin-input"><input id="newProductStock" placeholder="স্টক পরিমাণ" type="number" class="admin-input"><select id="newProductType" class="admin-input"><option value="main">মূল পণ্য</option><option value="related">সম্পর্কিত পণ্য</option></select><select id="newProductParent" class="admin-input" style="display: none;"><option value="">মূল পণ্য নির্বাচন করুন</option></select><button id="addProductAdminBtn" class="admin-btn">পণ্য সংযুক্ত করুন</button></div>`;
-      
-      // Add event listener for add product button
-      document.getElementById('addProductAdminBtn')?.addEventListener('click',()=>{ 
-        const url=document.getElementById('newProductUrl').value, 
-        name=document.getElementById('newProductName').value, 
-        price=parseFloat(document.getElementById('newProductPrice').value), 
-        oldPrice=parseFloat(document.getElementById('newProductOldPrice').value), 
-        stock=parseInt(document.getElementById('newProductStock').value),
-        type=document.getElementById('newProductType').value,
-        parentId=document.getElementById('newProductParent').value;
-        
-        if(url&&name&&price&&oldPrice&&stock){ 
-          const discount = Math.round(((oldPrice - price)/oldPrice)*100);
-          const newProduct = {
-            id:Date.now(),
-            name, 
-            price, 
-            oldPrice, 
-            discount, 
-            stock, 
-            img:url,
-            isMain: type === 'main',
-            parentId: type === 'related' ? (parentId || null) : null
-          }; 
-          saveProductToFirebase(newProduct); 
-        } else showToast("সব ফিল্ড পূরণ করুন","warning");
-      });
-      
-      // Handle product type change
-      document.getElementById('newProductType')?.addEventListener('change', (e) => {
-        const parentSelect = document.getElementById('newProductParent');
-        if (e.target.value === 'related') {
-          // Show parent selection and populate with main products
-          parentSelect.style.display = 'block';
-          const mainProducts = products.filter(p => p.isMain && !p.parentId);
-          parentSelect.innerHTML = '<option value="">মূল পণ্য নির্বাচন করুন</option>' + 
-            mainProducts.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-        } else {
-          // Hide parent selection for main products
-          parentSelect.style.display = 'none';
-        }
-      });
+      div.innerHTML = `<div class="admin-dashboard"><h3>📦 অর্ডার সমূহ (${orders.length})</h3><div id="adminOrdersList"></div><hr><h3>🛍️ পণ্য ব্যবস্থাপনা</h3><div id="adminProductsList"></div><hr><h4>➕ নতুন পণ্য যোগ করুন</h4><input id="newProductImageUrl" type="text" class="admin-input" placeholder="পণ্যের ছবির URL (Imgur বা অন্য লিংক)"><input id="newProductName" placeholder="Product Name" class="admin-input"><input id="newProductPrice" placeholder="Current Price" type="number" class="admin-input"><input id="newProductOldPrice" placeholder="Old Price (optional)" type="number" class="admin-input"><input id="newProductStock" placeholder="Stock Quantity" type="number" class="admin-input"><div style="margin:10px 0 14px;"><div style="font-size:.9rem;font-weight:700;margin-bottom:8px;color:#475569;">Size Options (optional)</div><div style="display:flex;flex-wrap:wrap;gap:10px;"><label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:#fff;border:1px solid rgba(30,41,59,.15);cursor:pointer;font-weight:700;"><input type="checkbox" value="S" class="ap-size" style="accent-color:#10b981;"> S</label><label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:#fff;border:1px solid rgba(30,41,59,.15);cursor:pointer;font-weight:700;"><input type="checkbox" value="M" class="ap-size" style="accent-color:#10b981;"> M</label><label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:#fff;border:1px solid rgba(30,41,59,.15);cursor:pointer;font-weight:700;"><input type="checkbox" value="L" class="ap-size" style="accent-color:#10b981;"> L</label><label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:#fff;border:1px solid rgba(30,41,59,.15);cursor:pointer;font-weight:700;"><input type="checkbox" value="XL" class="ap-size" style="accent-color:#10b981;"> XL</label><label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:#fff;border:1px solid rgba(30,41,59,.15);cursor:pointer;font-weight:700;"><input type="checkbox" value="XXL" class="ap-size" style="accent-color:#10b981;"> XXL</label></div></div><button type="button" id="addProductAdminBtn" class="admin-btn">Add Product</button></div>`;
+
       
       // Orders with complete customer details and status management
       const ordersDiv = document.getElementById('adminOrdersList');
@@ -1413,7 +1560,7 @@
       
       // Products management with edit/delete
       const productsDiv = document.getElementById('adminProductsList');
-      productsDiv.innerHTML = products.map(p => `<div class="product-admin-item"><img src="${p.img}" class="product-admin-img" onerror="this.src='https://placehold.co/60x60'"><div class="product-admin-info"><strong>${p.name}</strong><br>৳${p.price} <span style="text-decoration:line-through;color:#888;">৳${p.oldPrice}</span> | স্টক: ${p.stock}</div><div class="product-admin-actions"><button class="editProductBtn" data-id="${p.firebaseId}" style="color:#4caf50;"><i class="fas fa-edit"></i></button><button class="deleteProductBtn" data-id="${p.firebaseId}" style="color:#e63946;"><i class="fas fa-trash"></i></button></div></div>`).join('');
+      productsDiv.innerHTML = products.map(p => `<div class="product-admin-item"><img src="${p.img}" class="product-admin-img" onerror="this.src='https://placehold.co/60x60'"><div class="product-admin-info"><strong>${p.name}</strong><br><span class="product-admin-price">৳${p.price}</span> <span class="product-admin-old-price" style="text-decoration:line-through;">৳${p.oldPrice}</span> | স্টক: ${p.stock}</div><div class="product-admin-actions"><button class="editProductBtn" data-id="${p.firebaseId}" style="color:#4caf50;"><i class="fas fa-edit"></i></button><button class="deleteProductBtn" data-id="${p.firebaseId}" style="color:#e63946;"><i class="fas fa-trash"></i></button></div></div>`).join('');
       
       // Add event listeners for edit and delete buttons
       document.querySelectorAll('.editProductBtn').forEach(btn => {
@@ -1485,15 +1632,6 @@
             await deleteOrderFromFirebase(orderId);
           }
         });
-      });
-      
-      document.getElementById('addProductAdminBtn')?.addEventListener('click',()=>{ 
-        const url=document.getElementById('newProductUrl').value, name=document.getElementById('newProductName').value, price=parseFloat(document.getElementById('newProductPrice').value), oldPrice=parseFloat(document.getElementById('newProductOldPrice').value), stock=parseInt(document.getElementById('newProductStock').value);
-        if(url&&name&&price&&oldPrice&&stock){ 
-          const discount = Math.round(((oldPrice - price)/oldPrice)*100);
-          const newProduct = {id:Date.now(),name,price,oldPrice,discount,stock,img:url}; 
-          saveProductToFirebase(newProduct); 
-        } else showToast("সব ফিল্ড পূরণ করুন","warning");
       });
     }
   }
@@ -1633,12 +1771,22 @@
   }
 
   function initAdminPanel() {
-    document.getElementById('adminIcon').onclick=()=>{ 
-      const adminModal = document.getElementById('adminPanel');
+    const adminIcon = document.getElementById('adminIcon');
+    const adminModal = document.getElementById('adminPanel');
+    if (!adminIcon || !adminModal) return;
+
+    // Ensure clickable even when visually hidden on header
+    adminIcon.style.pointerEvents = 'auto';
+    adminIcon.style.position = adminIcon.style.position || 'relative';
+    adminIcon.style.zIndex = '2000';
+
+    adminIcon.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
       adminModal.style.display = 'block';
       document.body.style.overflow = 'hidden'; // Disable body scroll when modal is open
-      renderAdmin(); 
-    };
+      renderAdmin();
+    }, { passive: false });
   }
 
   function showPage(pageId) {
@@ -1815,6 +1963,7 @@
   // Initialize everything
   document.addEventListener('DOMContentLoaded',async()=>{
     AOS.init({duration:800,once:true});
+    initAdminAddProductDelegation();
     await initializeDefaultProducts();
     await loadProductsFromFirebase();
     await loadOrdersFromFirebase();
